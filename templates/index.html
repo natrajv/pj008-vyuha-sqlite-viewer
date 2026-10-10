@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vyuha SQLite Viewer</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='vyuha.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head><body>
+<header class="topbar">
+  <div class="brand"><img src="/static/vyuha.svg" alt=""><div><div class="app-title">Vyuha SQLite Viewer <span>v{{ config.version }}</span></div><div class="subtitle" id="databaseName">{{ db_name }}</div></div></div>
+  <div class="header-actions"><button class="primary-btn" onclick="openDatabasePicker()">▣ Open Database</button><input id="databasePicker" type="file" accept=".db,.sqlite,.sqlite3" hidden onchange="openDatabase(this)"><button class="menu-btn" onclick="showInfo('features')">Features</button><button class="menu-btn" onclick="showInfo('about')">About</button></div>
+</header>
+{% if error %}<div id="startupError" class="error-toast"><span>{{ error }}</span><button onclick="this.parentElement.remove()" title="Close error message">×</button></div>{% endif %}
+<main class="workspace" id="workspace">
+  <aside class="rail" id="rail">
+    <button class="rail-tab active" id="tablesTab" title="Tables" onclick="activateTab('tables')"><span>▦</span><small>Tables</small></button>
+    <button class="rail-tab" id="queryTab" title="SQL" onclick="activateTab('query')"><span>⌘</span><small>SQL</small></button>
+    <button class="rail-tab" id="savedTab" title="Saved Queries" onclick="activateTab('saved')"><span>☆</span><small>Saved</small></button>
+    <button class="rail-collapse" title="Collapse/expand side panel" onclick="togglePanel()">‹</button>
+  </aside>
+  <aside class="sidebar" id="sidebar">
+    <section id="tablesPanel" class="side-panel">
+      <div class="panel-head"><div class="panel-title">Tables <span id="tableCount">{{ tables|length }}</span></div><button class="icon-btn" onclick="togglePanel()" title="Collapse panel">‹</button></div>
+      <div class="filter-box"><input id="tableFilter" placeholder="Filter tables… (* and ?)" autocomplete="off"><button onclick="clearTableFilter()">×</button></div>
+      <div class="table-list" id="tableList">{% for table in tables %}<button class="table-item" data-table="{{ table }}" onclick="selectTable(this.dataset.table)"><span>▦</span>{{ table }}</button>{% else %}<div class="empty">No SQLite tables found.</div>{% endfor %}</div>
+    </section>
+    <section id="queryPanel" class="side-panel" style="display:none">
+      <div class="panel-head"><div class="panel-title">SQL</div><button class="icon-btn" onclick="togglePanel()" title="Collapse panel">‹</button></div>
+      <div class="accordion">
+        <details class="accordion-section" open><summary>SQL Editor</summary><div class="accordion-content">
+          <label for="sqlEditor">SQL (read-only)</label><textarea id="sqlEditor" spellcheck="false" placeholder="SELECT * FROM host LIMIT 100;"></textarea>
+          <div class="query-buttons"><button class="secondary-btn" onclick="openSaveQueryDialog()">Save Query</button><button class="primary-btn" onclick="runQuery()">Run Query</button></div>
+        </div></details>
+        <details class="accordion-section"><summary>SQL Help</summary><div class="accordion-content help-text">Run one read-only SELECT, WITH, or EXPLAIN statement. Use the Saved Queries tab to open, reorder, or delete saved queries.</div></details>
+      </div>
+    </section>
+    <section id="savedPanel" class="side-panel" style="display:none">
+      <div class="panel-head"><div class="panel-title">Saved Queries</div><button class="icon-btn" onclick="togglePanel()" title="Collapse panel">‹</button></div>
+      <details class="accordion-section saved-accordion" open>
+        <summary>Query group</summary>
+        <div class="accordion-content saved-group-content">
+          <div class="group-controls">
+            <label for="queryGroupSelect">Query group</label>
+            <select id="queryGroupSelect" onchange="selectQueryGroup(this.value)"></select>
+            <div class="group-create"><input id="newQueryGroup" placeholder="New group name"><button class="secondary-btn" onclick="createQueryGroup()">Create</button></div>
+            <div class="group-create"><input id="renameQueryGroup" placeholder="Rename selected group"><button class="secondary-btn" onclick="renameQueryGroup()">Rename</button></div>
+          </div>
+        </div>
+      </details>
+      <details class="accordion-section saved-accordion saved-results-accordion" open>
+        <summary>Saved queries and results</summary>
+        <div class="saved-results-content">
+          <div class="saved-search">
+            <input id="savedQuerySearch" placeholder="Search saved queries (* and ?)" autocomplete="off">
+            <button class="primary-btn" onclick="filterSavedQueries()">Search</button>
+            <button class="secondary-btn" onclick="clearSavedQuerySearch()">Clear</button>
+          </div>
+          <div class="saved-head"><strong id="savedGroupHeading">Saved queries</strong><span>Drag ☰ to reorder</span></div>
+          <div id="savedQueries" class="saved-queries"></div>
+        </div>
+      </details>
+    </section>
+  </aside>
+  <section class="content" id="content">
+    <div class="content-head"><div><button class="expand-btn" onclick="togglePanel()" title="Show side panel">☰</button><span id="selectedTable">Select a table</span></div>
+      <div class="content-actions"><button class="secondary-btn" id="refreshBtn" onclick="reloadGrid()" disabled>↻ Refresh</button><button class="secondary-btn" id="exportBtn" onclick="exportExcel()" disabled>⇩ Export to Excel</button><button class="secondary-btn" id="exportColumnsBtn" onclick="exportColumnNames()" disabled>⇩ Export Columns</button></div>
+    </div>
+    <div id="gridTools" class="grid-tools" style="display:none">
+      <div class="search-line"><label for="gridSearch">Search grid</label><input id="gridSearch" placeholder="Wildcard: * and ?; regex mode supported"><select id="gridSearchMode"><option value="wildcard">Wildcard</option><option value="regex">Regex</option></select><button class="primary-btn" onclick="applyGridSearch()">Search</button><button class="secondary-btn" onclick="clearGridSearch()">Clear</button></div>
+      <div class="search-hint">Search applies across all columns in the current table or query result. Click a column heading to sort.</div>
+    </div>
+    <div id="emptyState" class="empty-state"><img src="/static/vyuha.svg" alt=""><h2>Vyuha SQLite Viewer</h2><p>Choose a table or run a SQL query.</p></div>
+    <div id="tableView" class="table-view" style="display:none"><div class="table-meta" id="tableMeta"></div><div class="grid-wrap"><table id="dataGrid"><thead></thead><tbody></tbody></table></div><div class="pagination"><button onclick="goPage(-1)" id="prevBtn">‹</button><span id="pageInfo">Page 1</span><button onclick="goPage(1)" id="nextBtn">›</button></div></div>
+  </section>
+</main>
+<div id="errorToast" class="error-toast" style="display:none"><span id="errorText"></span><button onclick="closeError()" title="Close error message">×</button></div>
+<div class="modal-backdrop" id="saveQueryBackdrop" onclick="closeSaveQueryDialog(event)"><div class="modal save-modal" onclick="event.stopPropagation()"><div class="modal-head"><div class="modal-title">Save Query</div><button class="close-btn" onclick="closeSaveQueryDialog()">×</button></div><div class="info-body"><label for="saveQueryName">Query name</label><input id="saveQueryName" placeholder="Enter a name for this query"><label for="saveQueryGroup">Query group</label><select id="saveQueryGroup"></select><div class="dialog-actions"><button class="secondary-btn" onclick="closeSaveQueryDialog()">Cancel</button><button class="primary-btn" onclick="confirmSaveQuery()">Save</button></div></div></div></div>
+<div class="modal-backdrop" id="modalBackdrop" onclick="closeModal(event)"><div class="modal" onclick="event.stopPropagation()"><div class="modal-head"><div><div class="modal-title">Row Details</div><div class="modal-subtitle" id="modalSubtitle"></div></div><button class="close-btn" onclick="closeModal()">×</button></div><div class="details" id="rowDetails"></div></div></div>
+<div class="modal-backdrop" id="infoBackdrop" onclick="closeInfo(event)"><div class="modal small-modal" onclick="event.stopPropagation()"><div class="modal-head"><div class="modal-title" id="infoTitle"></div><button class="close-btn" onclick="closeInfo()">×</button></div><div class="info-body" id="infoBody"></div></div></div>
+<script>
+const state={mode:"table",table:null,page:1,pageSize:{{ config.page_size }},search:"",searchMode:"wildcard",sort:"",direction:"asc",columns:[],rows:[],querySql:"",queryName:""};
+const $=id=>document.getElementById(id);
+let tableButtons=[...document.querySelectorAll(".table-item")];
+
+function togglePanel(){ $("sidebar").classList.toggle("collapsed"); $("workspace").classList.toggle("panel-collapsed"); }
+function activateTab(tab){
+  $("tablesPanel").style.display=tab==="tables"?"flex":"none";
+  $("queryPanel").style.display=tab==="query"?"flex":"none";
+  $("savedPanel").style.display=tab==="saved"?"flex":"none";
+  $("tablesTab").classList.toggle("active",tab==="tables");
+  $("queryTab").classList.toggle("active",tab==="query");
+  $("savedTab").classList.toggle("active",tab==="saved");
+  if($("sidebar").classList.contains("collapsed")) togglePanel();
+}
+function globRegex(pattern){return "^"+pattern.replace(/[.+^${}()|[\]\\]/g,"\\$&").replace(/\*/g,".*").replace(/\?/g,".")+"$";}
+function filterTables(){let p=$("tableFilter").value.trim();let n=0;tableButtons.forEach(b=>{let m=true;try{m=!p||new RegExp(globRegex(p),"i").test(b.dataset.table)}catch{m=b.dataset.table.toLowerCase().includes(p.toLowerCase())}b.style.display=m?"flex":"none";if(m)n++});$("tableCount").textContent=n;}
+$("tableFilter").addEventListener("input",filterTables);
+function clearTableFilter(){$("tableFilter").value="";filterTables();}
+function openDatabasePicker(){$("databasePicker").click();}
+async function openDatabase(input){
+  if(!input.files.length)return; const fd=new FormData();fd.append("database",input.files[0]);
+  try{const r=await fetch("/api/open-database",{method:"POST",body:fd});const d=await r.json();if(!r.ok)throw Error(d.error||"Could not open database");
+    $("databaseName").textContent=d.name;const se=$("startupError");if(se)se.remove();closeError();renderTableList(d.tables);state.table=null;state.mode="table";showEmpty("Database opened. Select a table or run a query.");$("selectedTable").textContent="Select a table";$("exportBtn").disabled=true;$("refreshBtn").disabled=true;
+    await loadSavedQueries();activateTab("tables");
+  }catch(e){alert(e.message)}finally{input.value="";}
+}
+function renderTableList(tables){$("tableList").innerHTML="";tables.forEach(t=>{const b=document.createElement("button");b.className="table-item";b.dataset.table=t;b.innerHTML="<span>▦</span>";b.append(document.createTextNode(t));b.onclick=()=>selectTable(t);$("tableList").append(b)});tableButtons=[...document.querySelectorAll(".table-item")];filterTables();}
+function showEmpty(message){$("tableView").style.display="none";$("gridTools").style.display="none";$("emptyState").style.display="block";$("emptyState").querySelector("p").textContent=message;}
+async function selectTable(table){state.mode="table";state.table=table;state.page=1;state.search="";state.sort="";state.direction="asc";state.querySql="";document.querySelectorAll(".table-item").forEach(b=>b.classList.toggle("active",b.dataset.table===table));$("selectedTable").textContent=table;$("gridSearch").value="";$("refreshBtn").disabled=false;activateTab("tables");await loadGrid();}
+function applyGridSearch(){state.search=$("gridSearch").value.trim();state.searchMode=$("gridSearchMode").value;state.page=1;if(state.mode==="query")runQuery(true);else loadGrid();}
+function clearGridSearch(){ $("gridSearch").value="";state.search="";state.page=1;if(state.mode==="query")runQuery(true);else loadGrid();}
+async function loadGrid(){
+ if(!state.table)return;const p=new URLSearchParams({page:state.page,page_size:state.pageSize,search:state.search,mode:state.searchMode,sort:state.sort,direction:state.direction});
+ const r=await fetch(`/api/table/${encodeURIComponent(state.table)}?${p}`);const d=await r.json();if(!r.ok){alert(d.error||"Unable to load table");return}
+ state.columns=d.columns;state.rows=d.rows;renderGrid(d.columns,d.rows,d.total,d.page,d.pages,`${d.total.toLocaleString()} rows`);
+}
+function renderGrid(columns,rows,total,page=1,pages=1,meta=""){
+ $("emptyState").style.display="none";$("gridTools").style.display="block";$("tableView").style.display="flex";$("exportBtn").disabled=!columns.length;$("exportColumnsBtn").disabled=!columns.length;
+ const head=$("dataGrid").querySelector("thead"),body=$("dataGrid").querySelector("tbody");head.innerHTML="";body.innerHTML="";
+ const tr=document.createElement("tr");columns.forEach(c=>{const th=document.createElement("th");th.className="sortable";th.textContent=c+(state.sort===c?(state.direction==="asc"?" ▲":" ▼"):"");th.title="Click to sort";th.onclick=()=>sortBy(c);tr.append(th)});head.append(tr);
+ rows.forEach(row=>{const tr=document.createElement("tr");tr.title="Click to view row details";tr.onclick=()=>{if(state.mode==="table"&&row.__rowid__!==undefined)showRow(row.__rowid__,row);else showGenericRow(row)};columns.forEach(c=>{const td=document.createElement("td"),v=row[c];td.textContent=v===null?"NULL":String(v);if(v===null)td.className="null-value";tr.append(td)});body.append(tr)});
+ $("tableMeta").textContent=meta+(state.search?` · search: ${state.search} (${state.searchMode})`:"");
+ $("pageInfo").textContent=state.mode==="query"?`${rows.length} result rows`:`Page ${page} of ${pages}`;$("prevBtn").disabled=state.mode==="query"||page<=1;$("nextBtn").disabled=state.mode==="query"||page>=pages;
+}
+function sortBy(col){if(state.sort===col)state.direction=state.direction==="asc"?"desc":"asc";else{state.sort=col;state.direction="asc"}if(state.mode==="table")loadGrid();else{const mul=state.direction==="asc"?1:-1;state.rows.sort((a,b)=>{const x=a[col],y=b[col];if(x==null)return y==null?0:1;if(y==null)return -1;const nx=Number(x),ny=Number(y);if(String(x).trim()!==""&&String(y).trim()!==""&&Number.isFinite(nx)&&Number.isFinite(ny))return (nx-ny)*mul;return String(x).localeCompare(String(y),undefined,{numeric:true,sensitivity:"base"})*mul});renderGrid(state.columns,state.rows,state.rows.length,1,1,`${state.rows.length} query rows`) }}
+function reloadGrid(){if(state.mode==="table")loadGrid();else runQuery(true)}
+function goPage(delta){state.page=Math.max(1,state.page+delta);loadGrid();}
+async function showRow(rowid,row){let d={table:state.table,row};const r=await fetch(`/api/row/${encodeURIComponent(state.table)}/${rowid}`);if(r.ok)d=await r.json();showGenericRow(d.row,`${d.table} · Row ${rowid}`)}
+function showGenericRow(row,subtitle="Query result row"){ $("modalSubtitle").textContent=subtitle;const box=$("rowDetails");box.innerHTML="";Object.entries(row).forEach(([k,v])=>{const line=document.createElement("div");line.className="detail-row";const key=document.createElement("div");key.className="detail-key";key.textContent=k;const val=document.createElement("pre");val.className="detail-value";val.textContent=v===null?"NULL":String(v);if(v===null)val.classList.add("is-null");line.append(key,val);box.append(line)});$("modalBackdrop").classList.add("open")}
+function closeModal(e){if(!e||e.target===$("modalBackdrop"))$("modalBackdrop").classList.remove("open")}
+async function runQuery(keepSearch=false){
+ const sql=$("sqlEditor").value.trim();if(!sql){alert("Enter a SELECT query.");return}
+ state.mode="query";state.querySql=sql;state.table=null;state.page=1;state.search=keepSearch?$("gridSearch").value.trim():"";state.searchMode=$("gridSearchMode").value;
+ const r=await fetch("/api/query",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sql,search:state.search,mode:state.searchMode})});const d=await r.json();if(!r.ok){alert(d.error||"Query failed");return}
+ state.columns=d.columns;state.rows=d.rows;state.sort="";$("selectedTable").textContent="Query results";$("refreshBtn").disabled=false;renderGrid(d.columns,d.rows,d.total,1,1,`${d.total.toLocaleString()} query rows`);
+}
+function searchQuery(){state.search=$("querySearchText").value.trim();$("gridSearch").value=state.search;$("gridSearchMode").value="wildcard";state.searchMode="wildcard";runQuery(true)}
+async function openSaveQueryDialog(){
+const sql=$("sqlEditor").value.trim();
+if(!sql){showError("Enter a SQL query before saving.");return}
+$("saveQueryName").value=state.queryName||"";
+try{
+const r=await fetch("/api/saved-queries"),d=await r.json();
+if(!r.ok)throw new Error(d.error||"Unable to load query groups.");
+const sel=$("saveQueryGroup");sel.innerHTML="";
+(d.groups||["Default"]).forEach(g=>{const o=document.createElement("option");o.value=g;o.textContent=g;sel.append(o)});
+sel.value=d.active_group||"Default";
+$("saveQueryBackdrop").classList.add("open");
+$("saveQueryName").focus();
+}catch(err){showError(err.message||"Unable to load query groups.");}
+}
+function closeSaveQueryDialog(e){
+if(!e||e.target===$("saveQueryBackdrop"))$("saveQueryBackdrop").classList.remove("open");
+}
+async function confirmSaveQuery(){
+const name=$("saveQueryName").value.trim(),sql=$("sqlEditor").value.trim(),group=$("saveQueryGroup").value;
+if(!name){showError("Enter a name for this query.");$("saveQueryName").focus();return}
+if(!sql){showError("Enter a SQL query before saving.");closeSaveQueryDialog();return}
+if(!group){showError("Select a query group.");return}
+try{
+const r=await fetch("/api/saved-queries",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,sql,group})});
+const d=await r.json();
+if(!r.ok){showError(d.error||"Unable to save query.");return}
+state.queryName=name;
+closeSaveQueryDialog();
+renderQueryGroups(d.groups||[group],d.active_group||group);
+renderSavedQueries(d.queries||[]);
+$("savedQuerySearch").value="";
+showError("Query saved: "+name+" (group: "+(d.active_group||group)+")");
+}catch(err){showError("Unable to save query. Check that the application is running and try again.");}
+}
+async function loadSavedQueries(){const r=await fetch("/api/saved-queries"),d=await r.json();renderQueryGroups(d.groups||["Default"],d.active_group||"Default");renderSavedQueries(d.queries||[])}
+function renderQueryGroups(groups,active){const sel=$("queryGroupSelect");sel.innerHTML="";groups.forEach(g=>{const o=document.createElement("option");o.value=g;o.textContent=g;sel.append(o)});sel.value=active;$("savedGroupHeading").textContent=active}
+async function selectQueryGroup(name){const r=await fetch("/api/query-groups/active",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})}),d=await r.json();if(!r.ok){showError(d.error||"Unable to select query group");return}renderQueryGroups(d.groups,d.active_group);renderSavedQueries(d.queries||[]);$("savedQuerySearch").value=""}
+async function createQueryGroup(){const name=$("newQueryGroup").value.trim();if(!name){showError("Enter a group name.");return}if(!confirm(`Create or select Saved Queries group "${name}"?`))return;const r=await fetch("/api/query-groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})}),d=await r.json();if(!r.ok){showError(d.error||"Unable to create query group");return}$("newQueryGroup").value="";renderQueryGroups(d.groups,d.active_group);renderSavedQueries(d.queries||[]);$("savedQuerySearch").value=""}
+async function renameQueryGroup(){
+const oldName=$("queryGroupSelect").value,newName=$("renameQueryGroup").value.trim();
+if(!oldName){showError("Select a query group to rename.");return}
+if(!newName){showError("Enter the new query group name.");$("renameQueryGroup").focus();return}
+if(oldName===newName){showError("The new group name is the same as the current name.");return}
+if(!confirm(`Rename query group "${oldName}" to "${newName}"?`))return;
+try{
+const r=await fetch("/api/query-groups/rename",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({old_name:oldName,new_name:newName})});
+const d=await r.json();
+if(!r.ok){showError(d.error||"Unable to rename query group.");return}
+$("renameQueryGroup").value="";
+renderQueryGroups(d.groups,d.active_group);
+renderSavedQueries(d.queries||[]);
+showError(`Query group renamed to "${d.active_group}".`);
+}catch(err){showError("Unable to rename query group. Check that the application is running and try again.");}
+}
+function filterSavedQueries(){const p=$("savedQuerySearch").value.trim();[...$("savedQueries").querySelectorAll(".saved-query")].forEach(b=>{let m=true;try{m=!p||new RegExp(globRegex(p),"i").test(b.dataset.name)}catch{m=b.dataset.name.toLowerCase().includes(p.toLowerCase())}b.style.display=m?"flex":"none"})}
+function clearSavedQuerySearch(){$("savedQuerySearch").value="";filterSavedQueries()}
+function renderSavedQueries(queries){const box=$("savedQueries");box.innerHTML="";queries.forEach(q=>{const item=document.createElement("div");item.className="saved-query";item.draggable=true;item.dataset.name=q.name;item.innerHTML=`<span class="drag" title="Drag to reorder">☰</span><button class="saved-name"></button><button class="delete-query" title="Delete query">×</button>`;item.querySelector(".saved-name").textContent=q.name;item.querySelector(".saved-name").onclick=()=>{$("sqlEditor").value=q.sql;state.queryName=q.name;runQuery(false)};item.querySelector(".delete-query").onclick=async()=>{if(confirm(`Delete saved query "${q.name}" from group "${$("queryGroupSelect").value}"?`)){await fetch("/api/saved-queries/"+encodeURIComponent(q.name),{method:"DELETE"});loadSavedQueries()}};item.addEventListener("dragstart",e=>{e.dataTransfer.setData("text/plain",q.name);item.classList.add("dragging")});item.addEventListener("dragend",()=>item.classList.remove("dragging"));item.addEventListener("dragover",e=>e.preventDefault());item.addEventListener("drop",async e=>{e.preventDefault();const from=e.dataTransfer.getData("text/plain"),to=q.name,names=[...box.querySelectorAll(".saved-query")].map(x=>x.dataset.name);names.splice(names.indexOf(from),1);names.splice(names.indexOf(to),0,from);await fetch("/api/saved-queries",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({names})});loadSavedQueries()});box.append(item)});filterSavedQueries()}
+function exportColumnNames(){
+const columns=state.columns||[];
+if(!columns.length){showError("There are no grid column names to export.");return}
+const text=columns.join("\r\n")+"\r\n";
+const blob=new Blob([text],{type:"text/plain;charset=utf-8"});
+const url=URL.createObjectURL(blob),a=document.createElement("a");
+a.href=url;a.download="grid-column-names.txt";document.body.appendChild(a);a.click();a.remove();
+URL.revokeObjectURL(url);
+}
+async function exportExcel(){if(!state.columns.length){alert("No data to export.");return}const payload={columns:state.columns,rows:state.rows,sheet:state.mode==="table"?state.table:"Query Results"};const r=await fetch("/api/export",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!r.ok){const d=await r.json();alert(d.error||"Export failed");return}const blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="vyuha-sqlite-export.xlsx";a.click();URL.revokeObjectURL(url)}
+function showInfo(type){$("infoTitle").textContent=type==="features"?"Features":"About Vyuha SQLite Viewer";$("infoBody").innerHTML=type==="features"?`<ul class="feature-list"><li>Open and remember a SQLite database file.</li><li>Browse tables with wildcard table filtering and pagination.</li><li>Search grid rows by wildcard or regular expression.</li><li>Sort by clicking column headers.</li><li>Run and save read-only SQL queries.</li><li>Reorder or delete named queries.</li><li>Export the current grid result to Excel.</li><li>Read-only database connections protect the source data.</li></ul>`:`<div class="about-card"><img src="/static/vyuha.svg"><h2>Vyuha SQLite Viewer</h2><p>Version {{ config.version }}</p><p>A lightweight Flask application for browsing SQLite databases.</p></div>`;$("infoBackdrop").classList.add("open")}
+function closeInfo(e){if(!e||e.target===$("infoBackdrop"))$("infoBackdrop").classList.remove("open")}
+function showError(message){$("errorText").textContent=message;$("errorToast").style.display="flex"}
+function closeError(){$("errorToast").style.display="none"}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeModal();closeInfo();closeSaveQueryDialog();closeError()}});
+$("savedQuerySearch").addEventListener("keydown",e=>{if(e.key==="Enter")filterSavedQueries()});
+loadSavedQueries();
+</script>
+</body></html>
