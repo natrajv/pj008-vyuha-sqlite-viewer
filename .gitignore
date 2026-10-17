@@ -1,5 +1,8 @@
 # Vyuha specific
 .vyuha*
+.arch/
+.versions/
+.rback/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
