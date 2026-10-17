@@ -5,9 +5,10 @@
 
 
 *==Change History==*
-*--v1.4.0w-20261017_1813 [03]
-> Added: New feature "Export to Blank DB" [03]
+*--v1.4.0-20261017_2024 [03]
+> Added: New feature "Export to Blank DB/Excel" [03]
 > Added Export to Blank DB immediately to the left of "Export to Excel". The dialog defaults to * to include all tables, and supports * and ? wildcards with comma or newline separated patterns. The export creates a schema-only SQLite file, preserving selected tables’ indexes and triggers without copying data
+> Enhanced "Export to Excel" to "Export to DB/Excel" similar to "Export to Blank DB/Excel"
 
 *--v1.0.0-20261009_0828 [02]
 Released on 09 Oct 2026
