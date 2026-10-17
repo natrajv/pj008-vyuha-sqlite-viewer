@@ -1,4 +1,5 @@
 # Vyuha SQLite Viewer
+A lightweight Flask application for browsing SQLite databases.
 
 ## Features
 
