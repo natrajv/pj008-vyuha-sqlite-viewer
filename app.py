@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, abort, send_file
 from pathlib import Path
 from werkzeug.utils import secure_filename
 import sqlite3, json, fnmatch, re, io
+import tempfile
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -294,6 +295,104 @@ def export_excel():
     output.seek(0)
     return send_file(output, as_attachment=True, download_name="vyuha-sqlite-export.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+@app.post("/api/export-blank-db")
+def export_blank_db():
+    payload = request.get_json(silent=True) or {}
+    requested_tables = payload.get("tables", [])
+    include_data = payload.get("include_data") is True
+    try:
+        with connect() as source:
+            objects = source.execute("""
+                SELECT type, name, tbl_name, sql FROM sqlite_master
+                WHERE type IN ('table', 'index', 'trigger') AND name NOT LIKE 'sqlite_%'
+                ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name COLLATE NOCASE
+            """).fetchall()
+        tables = [row["name"] for row in objects if row["type"] == "table"]
+        if not isinstance(requested_tables, list) or not all(isinstance(name, str) for name in requested_tables):
+            return jsonify(error="Choose one or more tables to export."), 400
+        selected = set(requested_tables)
+        if not selected.issubset(tables):
+            return jsonify(error="The selection contains a table that is no longer available."), 400
+        if not selected:
+            return jsonify(error="No tables match the supplied selection."), 400
+        table_schema = [row["sql"] for row in objects if row["type"] == "table" and row["name"] in selected and row["sql"]]
+        secondary_schema = [row["sql"] for row in objects if row["type"] in {"index", "trigger"} and row["tbl_name"] in selected and row["sql"]]
+        temp_dir = tempfile.TemporaryDirectory()
+        output_path = Path(temp_dir.name) / "vyuha-blank-export.sqlite"
+        with sqlite3.connect(output_path) as destination:
+            destination.execute("PRAGMA foreign_keys = OFF")
+            for statement in table_schema:
+                destination.execute(statement)
+            if include_data:
+                with connect() as source:
+                    for table in tables:
+                        if table not in selected:
+                            continue
+                        cols = [row["name"] for row in source.execute(f"PRAGMA table_xinfo({quote_ident(table)})") if row["hidden"] == 0]
+                        if cols:
+                            names = ", ".join(quote_ident(name) for name in cols)
+                            placeholders = ", ".join("?" for _ in cols)
+                            insert_sql = f"INSERT INTO {quote_ident(table)} ({names}) VALUES ({placeholders})"
+                            cursor = source.execute(f"SELECT {names} FROM {quote_ident(table)}")
+                            while batch := cursor.fetchmany(1000):
+                                destination.executemany(insert_sql, batch)
+                        else:
+                            cursor = source.execute(f"SELECT 1 FROM {quote_ident(table)}")
+                            for _ in cursor:
+                                destination.execute(f"INSERT INTO {quote_ident(table)} DEFAULT VALUES")
+            for statement in secondary_schema:
+                destination.execute(statement)
+        response = send_file(output_path, as_attachment=True, download_name="vyuha-blank-database.sqlite",
+                             mimetype="application/vnd.sqlite3")
+        response.call_on_close(temp_dir.cleanup)
+        return response
+    except (sqlite3.Error, FileNotFoundError) as exc:
+        return jsonify(error=f"Unable to export blank database: {exc}"), 400
+
+@app.post("/api/export-blank-excel")
+def export_blank_excel():
+    payload = request.get_json(silent=True) or {}
+    requested_tables = payload.get("tables", [])
+    include_data = payload.get("include_data") is True
+    try:
+        available = table_names()
+        if not isinstance(requested_tables, list) or not all(isinstance(name, str) for name in requested_tables):
+            return jsonify(error="Choose one or more tables to export."), 400
+        if not requested_tables or not set(requested_tables).issubset(available):
+            return jsonify(error="Choose tables that are available in the active database."), 400
+
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+        used_names = set()
+        with connect() as source:
+            for table in requested_tables:
+                base = re.sub(r"[\\/*?:\[\]]", "_", table).strip("'")[:31] or "Table"
+                title = base
+                suffix = 2
+                while title.casefold() in used_names:
+                    ending = f"_{suffix}"
+                    title = base[:31-len(ending)] + ending
+                    suffix += 1
+                used_names.add(title.casefold())
+                sheet = workbook.create_sheet(title)
+                column_rows = source.execute(f"PRAGMA table_info({quote_ident(table)})").fetchall()
+                columns = [row["name"] for row in column_rows]
+                sheet.append(columns)
+                if include_data and columns:
+                    names = ", ".join(quote_ident(name) for name in columns)
+                    cursor = source.execute(f"SELECT {names} FROM {quote_ident(table)}")
+                    for batch in iter(lambda: cursor.fetchmany(1000), []):
+                        for row in batch:
+                            sheet.append(list(row))
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return send_file(output, as_attachment=True, download_name="vyuha-blank-tables.xlsx",
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except (sqlite3.Error, FileNotFoundError) as exc:
+        return jsonify(error=f"Unable to export blank Excel workbook: {exc}"), 400
 
 @app.get("/api/row/<path:table>/<int:rowid>")
 def api_row(table, rowid):
