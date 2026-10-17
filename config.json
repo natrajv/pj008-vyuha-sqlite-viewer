@@ -1,5 +1,5 @@
 {
-    "version": "1.4.0",
+    "version": "1.4.2",
     "database": "inventory.db",
     "page_size": 50,
     "host": "127.0.0.1",
